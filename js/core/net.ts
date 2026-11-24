@@ -22,6 +22,19 @@
 
 import type { Kernel, NetDevice } from "./kernel.ts";
 
+/** Where a guest connection goes, and where it comes from. */
+export interface NetAddress {
+	host: string;
+	port: number;
+	/**
+	 * The guest end of the connection as the stack sees it: the guest's
+	 * address (10.0.2.15) and its source port. A guest behind its own NAT
+	 * (containers) shows the translated address and port, since that is what
+	 * leaves its eth0.
+	 */
+	source?: { host: string; port: number };
+}
+
 /** Events a backend reports for one TCP connection. */
 export interface NetConnectionEvents {
 	onConnect(): void;
@@ -51,15 +64,20 @@ export interface NetConnection {
 /**
  * Transport for the guest's TCP connections and DNS lookups.
  *
- *   connect({ host, port }, events) -> NetConnection
+ *   connect({ host, port, source }, events) -> NetConnection
  *   lookup(name) -> IPv4 dotted quads; reject with { code: "ENOTFOUND" }
  *     for NXDOMAIN, anything else becomes SERVFAIL
  *   close() (optional) drops every connection and the transport
  */
 export interface NetBackend {
-	connect(addr: { host: string; port: number }, ev: NetConnectionEvents): NetConnection;
+	connect(addr: NetAddress, ev: NetConnectionEvents): NetConnection;
 	lookup(name: string): Promise<string[]>;
 	close?(): void;
+}
+
+/** A NetBackend, not a NetDevice (which has `send`). */
+export function isNetBackend(n: NetDevice | NetBackend): n is NetBackend {
+	return typeof (n as NetBackend).connect === "function" && typeof (n as NetDevice).send !== "function";
 }
 
 export interface NetStackOptions {
@@ -314,7 +332,7 @@ class TcpConn implements TcpEndpoint {
 	connect(): void {
 		const host = this.stack.backendHost(this.ip);
 		if (host === null) return this.refuse();
-		this.handle = this.stack.backend.connect({ host, port: this.port }, {
+		this.handle = this.stack.backend.connect({ host, port: this.port, source: { host: ip4str(this.stack.guest), port: this.gport } }, {
 			onConnect: () => {
 				if (this.state !== "connecting") return;
 				this.state = "synrcvd";
